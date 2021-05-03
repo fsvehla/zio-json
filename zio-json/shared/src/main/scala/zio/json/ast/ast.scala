@@ -7,6 +7,11 @@ import zio.json.JsonDecoder.{ JsonError, UnsafeJson }
 import zio.json._
 import zio.json.ast.Json._
 import zio.json.internal._
+import zio.json.ast.JsonCursor.Identity
+import zio.json.ast.JsonCursor.AndThen
+import zio.json.ast.JsonCursor.DownField
+import zio.json.ast.JsonCursor.DownElement
+import zio.json.ast.JsonCursor.FilterType
 
 /**
  * This AST of JSON is made available so that arbitrary JSON may be included as
@@ -24,31 +29,46 @@ import zio.json.internal._
  * JsonValue / Json / JValue
  */
 sealed abstract class Json { self =>
+
   /**
    * Removes the element at the position, or returns an error -- when?
-   **/
-  final def delete(cursor: JsonCursor[_, _]): Either[String, Json] = {
-    // Keep track of the position that we want deleted
-    // val topCursor = cursor
-
-    def walk(node: Json, at: JsonCursor[_, _]): Either[String, Json] = 
-      at match {
-        case JsonCursor.identity => Right(self)
-        case JsonCursor.DownField(parent, field) =>
-          // we can only delete the path if we're this field
-          // oh -- this is the right side -- we can't just call parent
-          // unless we know that we're the terminal leaf node.
-          println(s"downField '${ field }' @ ${ self }")
-
-          walk(node, parent).flatMap { x =>
-            println(s"result of parant walk: '$x'")
-
-            ???
+   */
+  final def delete(target: JsonCursor[_, _ <: Json]): Either[String, Json] =
+    target match {
+      case DownField(parent, name) =>
+        // remove the given element
+        Right {
+          self.transformDownSomeWithCursor { case (j @ Json.Obj(fields), cursor) =>
+            Json.Obj(
+              fields.filterNot { case (name, _) =>
+                cursor.isObject.field(name) == target
+              }
+            )
           }
-      }
+        }
 
-      walk(self, cursor)
-  }
+      case DownElement(parent, index) =>
+        // remove the given element
+        Right {
+          self.transformDownSomeWithCursor { case (j @ Json.Arr(elements), cursor) =>
+            Json.Arr(
+              elements.zipWithIndex.collect {
+                case (e, i) if cursor.isArray.element(i) != target =>
+                  e
+              }
+            )
+          }
+        }
+
+      case Identity =>
+        Right(Json.Null)
+
+      case FilterType(parent, jsonType) =>
+        Left("Not implemeneted")
+
+      case AndThen(parent, next) =>
+        ???
+    }
 
   final def diff(that: Json): JsonDiff = JsonDiff(self, that)
 
@@ -232,6 +252,33 @@ sealed abstract class Json { self =>
     loop(self)
   }
 
+  final def transformDownWithCursor(f: (Json, JsonCursor[_, _ <: Json]) => Json): Json = {
+    def loop(json: Json, cursor: JsonCursor[_, _ <: Json]): Json =
+      f(json, cursor) match {
+        case Obj(fields) =>
+          Obj(fields.map { case (name, value) =>
+            (name, loop(value, cursor.isObject.field(name)))
+          })
+
+        case Arr(elements) =>
+          Arr(elements.zipWithIndex.map { case (v, i) =>
+            loop(v, cursor.isArray.element(i))
+          })
+
+        case json =>
+          json
+      }
+
+    loop(self, JsonCursor.identity)
+  }
+
+  final def transformDownSomeWithCursor(pf: PartialFunction[(Json, JsonCursor[_, _ <: Json]), Json]): Json = {
+    val lifted = pf.lift
+    val total  = (json: Json, cursor: JsonCursor[_, _ <: Json]) => lifted((json, cursor)).getOrElse(json)
+
+    self.transformDownWithCursor(total)
+  }
+
   final def transformDownSome(pf: PartialFunction[Json, Json]): Json = {
     val lifted = pf.lift
     val total  = (json: Json) => lifted(json).getOrElse(json)
@@ -336,7 +383,12 @@ object Json {
       override final def toJsonAST(a: Bool): Either[String, Json] = Right(a)
     }
   }
-  final case class Str(value: String) extends Json
+
+  final case class Str(value: String) extends Json { self =>
+    def map(fn: String => String): Json =
+      Json.Str(fn(self.value))
+  }
+
   object Str {
     implicit val decoder: JsonDecoder[Str] = new JsonDecoder[Str] {
       def unsafeDecode(trace: List[JsonError], in: RetractReader): Str =

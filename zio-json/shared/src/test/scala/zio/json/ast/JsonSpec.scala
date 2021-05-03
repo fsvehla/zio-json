@@ -62,6 +62,64 @@ object JsonSpec extends DefaultRunnableSpec {
           assert(obj1.hashCode)(equalTo(obj2.hashCode))
         }
       ),
+      suite("delete")(
+        test("removes object entries") {
+          val transformed = tweet.delete(JsonCursor.field("user").isObject.field("name"))
+
+          assert(transformed)(
+            isRight(
+              equalTo(
+                Json.Obj(
+                  "id" -> Json.Num(8500),
+                  "user" -> Json.Obj(
+                    "id" -> Json.Num(6200)
+                  ),
+                  "entities" -> Json.Obj(
+                    "hashtags" -> Json.Arr(
+                      Json.Str("twitter"),
+                      Json.Str("developer")
+                    )
+                  )
+                )
+              )
+            )
+          )
+        },
+        test("removes array entries") {
+          val transformed = tweet.delete(JsonCursor.field("entities").isObject.field("hashtags").isArray.element(1))
+
+          assert(transformed)(
+            isRight(
+              equalTo(
+                Json.Obj(
+                  "id" -> Json.Num(8500),
+                  "user" -> Json.Obj(
+                    "id"   -> Json.Num(6200),
+                    "name" -> Json.Str("Twitter API")
+                  ),
+                  "entities" -> Json.Obj(
+                    "hashtags" -> Json.Arr(
+                      Json.Str("twitter")
+                    )
+                  )
+                )
+              )
+            )
+          )
+        },
+        test("identity") {
+          assert(Json.Str("hello").delete(JsonCursor.identity))(
+            isRight(
+              equalTo(Json.Null)
+            )
+          )
+        },
+        test("removes filtered cursors only if the type matches") {
+          val transformed = tweet.delete(JsonCursor.field("user").isObject.field("id").isString)
+
+          assert(transformed)(isRight(equalTo(tweet)))
+        }
+      ),
       suite("foldUp")(
         test("folds the structure bottom-up (starting at the leaves)") {
           val obj =
@@ -110,25 +168,33 @@ object JsonSpec extends DefaultRunnableSpec {
         val arr2 = Json.Arr(Json.Str("one"), Json.Obj("two" -> Json.Num(2)), Json.Num(3))
         assert(arr1.hashCode)(equalTo(arr2.hashCode))
       },
-      suite("delete")(
-        test("removes the element at the given position") {
-          val json = Json.Obj(
-            "user" -> Json.Obj(
-              "id"       -> Json.Num(1001),
-              "username" -> Json.Str("Bob"),
-              "password" -> Json.Str("hunter2")
-            )
-          )
+      suite("transformDownWithCursor")(
+        test("scalar") {
+          val transformed = Json.Str("hello").transformDownSomeWithCursor { case (Json.Str(s), JsonCursor.identity) =>
+            Json.Str("world")
+          }
 
-          val clean = json.delete(JsonCursor.field("user").isObject.field("password"))
+          assert(transformed)(equalTo(Json.Str("world")))
+        },
+        test("arrays") {
+          val cursor = JsonCursor.field("entities").isObject.field("hashtags").isArray.element(1)
 
-          assert(clean)(
-            isRight(
-              equalTo(
-                Json.Obj(
-                  "user" -> Json.Obj(
-                    "id"       -> Json.Num(1001),
-                    "username" -> Json.Str("Bob")
+          val transformed = tweet.transformDownSomeWithCursor { case (Json.Str(x), `cursor`) =>
+            Json.Str(List(x, x, x).mkString(", "))
+          }
+
+          assert(transformed)(
+            equalTo(
+              Json.Obj(
+                "id" -> Json.Num(8500),
+                "user" -> Json.Obj(
+                  "id"   -> Json.Num(6200),
+                  "name" -> Json.Str("Twitter API")
+                ),
+                "entities" -> Json.Obj(
+                  "hashtags" -> Json.Arr(
+                    Json.Str("twitter"),
+                    Json.Str("developer, developer, developer")
                   )
                 )
               )
